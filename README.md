@@ -1,6 +1,16 @@
 # VM NUT + PeaNUT pour Proxmox VE
 
-Ce dossier contient un script qui crée la VM **125** sous **Debian 13**, configure son réseau statique, passe l’UPS APC en USB, puis installe **NUT Server** et **PeaNUT**.
+Ce dépôt contient un installateur interactif qui crée la VM **125** sous **Debian 13**, configure son réseau statique, passe l’UPS APC en USB, puis installe **NUT Server** et **PeaNUT**.
+
+## Installation rapide
+
+Connectez-vous en `root` au nœud Proxmox, branchez l’UPS, puis lancez :
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Shir0o0o0o/NUTAndPeanut/main/install-nut-vm.sh)"
+```
+
+L’assistant détecte les stockages compatibles et l’UPS APC, demande la clé publique SSH et affiche un résumé avant toute création. Les mots de passe NUT sont générés automatiquement et affichés à la fin.
 
 ## Avant de commencer
 
@@ -12,26 +22,34 @@ Ce dossier contient un script qui crée la VM **125** sous **Debian 13**, config
 
    Une ligne APC ressemble souvent à `ID 051d:0002`, mais utilisez les valeurs réellement affichées.
 
-2. Ouvrez `install-nut-vm.sh` et adaptez au minimum :
+2. Préparez une clé publique SSH. L’assistant vous demandera de la coller.
 
-   - `VM_STORAGE` et `SNIPPET_STORAGE` ;
-   - `SSH_PUBLIC_KEY` ;
-   - `USB_VENDOR_ID` et `USB_PRODUCT_ID` ;
-   - les deux mots de passe NUT marqués `CHANGE_ME` ;
-   - bridge, IP, passerelle et DNS si nécessaire.
-
-3. Dans l’interface Proxmox, vérifiez que le stockage choisi pour `SNIPPET_STORAGE` autorise le type de contenu **Snippets** : **Datacenter > Storage > stockage > Edit**.
+3. Vérifiez qu’au moins un stockage Proxmox autorise le type de contenu **Snippets** : **Datacenter > Storage > stockage > Edit**.
 
 ## Exécution
 
-Copiez le script sur le nœud Proxmox, puis lancez :
+Vous pouvez aussi télécharger le script, l’inspecter, puis l’exécuter localement :
 
 ```bash
+curl -fLo install-nut-vm.sh https://raw.githubusercontent.com/Shir0o0o0o/NUTAndPeanut/main/install-nut-vm.sh
+less install-nut-vm.sh
 chmod +x install-nut-vm.sh
 ./install-nut-vm.sh
 ```
 
-Le script doit être exécuté en `root` directement sur Proxmox VE. Il vérifie l’image Debian avec la somme SHA-512 publiée par Debian.
+Le script doit être exécuté en `root` directement sur Proxmox VE. Il vérifie l’image Debian avec la somme SHA-512 publiée par Debian et demande une confirmation finale avant de créer la VM.
+
+### Mode non interactif
+
+Toutes les options peuvent être fournies comme variables d’environnement. Dans ce mode, `SSH_PUBLIC_KEY` est obligatoire et `ASSUME_YES=true` supprime la confirmation :
+
+```bash
+SSH_PUBLIC_KEY="$(cat ~/.ssh/id_ed25519.pub)" \
+VMID=125 \
+VM_IP_CIDR=192.168.1.25/24 \
+ASSUME_YES=true \
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Shir0o0o0o/NUTAndPeanut/main/install-nut-vm.sh)"
+```
 
 ## Après le déploiement
 
@@ -59,16 +77,9 @@ Ouvrez ensuite `http://192.168.1.25:8080`. Dans PeaNUT, ajoutez un serveur NUT a
 - Sur une VM déjà initialisée, cloud-init peut considérer ses étapes « une fois par instance » comme terminées. Le script met bien à jour la configuration Proxmox, mais ne force pas une réinitialisation cloud-init dans l’invité.
 - Le passthrough par Vendor/Product ID suppose qu’un seul périphérique possède cette paire d’identifiants.
 
-## Hébergement GitHub facultatif
+## Sécurité
 
-Créez un dépôt privé, par exemple `proxmox-nut-vm`, contenant :
-
-```text
-proxmox-nut-vm/
-├── install-nut-vm.sh
-├── README.md
-├── LICENSE
-└── .gitignore
-```
-
-Ne publiez jamais vos mots de passe ou votre clé privée. Pour un dépôt partagé, laissez les valeurs `CHANGE_ME` dans le script et effectuez vos personnalisations dans une copie locale non suivie par Git. Un dépôt GitHub facilite le téléchargement et les mises à jour, mais n’est pas nécessaire : le script fonctionne seul.
+- Le dépôt ne contient aucun mot de passe, jeton ou clé SSH personnelle.
+- Ne placez jamais une clé privée dans `SSH_PUBLIC_KEY` : seule la ligne du fichier `.pub` est attendue.
+- Lire un script avant de l’envoyer directement à `bash` reste la méthode la plus prudente.
+- Pour une installation reproductible, utilisez à terme l’URL d’une version GitHub figée plutôt que la branche `main`.
