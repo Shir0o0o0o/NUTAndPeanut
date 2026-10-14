@@ -107,7 +107,7 @@ first_storage_with_content() {
 }
 
 choose_storage() {
-  local variable=$1 wanted=$2 label=$3 current choice index storage content free state
+  local variable=$1 wanted=$2 label=$3 current choice index storage content free state candidate suffix
   local -a storages=()
   local -a menu=()
   current=${!variable-}
@@ -120,9 +120,21 @@ choose_storage() {
       [[ -n "$storage" ]] || continue
       if pvesm config "$storage" 2>/dev/null | grep -q '^dir:'; then storages+=("$storage"); fi
     done < <(list_active_storages)
-    (( ${#storages[@]} > 0 )) || die "Aucun stockage de type Directory ne peut accueillir les snippets cloud-init."
-    ENABLE_SNIPPETS_STORAGE=oui
-    warn "Le type de contenu Snippets n'est active sur aucun stockage. Il sera ajoute au stockage choisi apres votre confirmation finale."
+    if (( ${#storages[@]} > 0 )); then
+      ENABLE_SNIPPETS_STORAGE=oui
+      warn "Le type de contenu Snippets n'est active sur aucun stockage. Il sera ajoute au stockage choisi apres votre confirmation finale."
+    else
+      candidate=nut-snippets
+      suffix=2
+      while pvesm config "$candidate" >/dev/null 2>&1; do
+        candidate="nut-snippets-$suffix"
+        ((suffix++))
+      done
+      printf -v "$variable" '%s' "$candidate"
+      CREATE_SNIPPETS_STORAGE=oui
+      warn "Aucun stockage Directory n'est configure. Le stockage local '$candidate' sera cree dans /var/lib/vz apres votre confirmation finale."
+      return
+    fi
   fi
   (( ${#storages[@]} > 0 )) || die "Aucun stockage actif n'accepte le contenu '$wanted'."
   if (( ${#storages[@]} == 1 )); then
@@ -186,7 +198,7 @@ on_error() {
 trap on_error ERR
 
 [[ $EUID -eq 0 ]] || die "Executez ce script en root sur Proxmox."
-for cmd in qm pct pvesm pvesh curl sha512sum lsusb awk grep sed base64 openssl ip ssh-keygen whiptail; do require_command "$cmd"; done
+for cmd in qm pct pvesm pvesh curl sha512sum lsusb awk grep sed base64 openssl ip ssh-keygen whiptail install; do require_command "$cmd"; done
 [[ -r /etc/pve/.version ]] || die "Ce systeme ne semble pas etre un noeud Proxmox VE."
 [[ -r /dev/tty && -w /dev/tty ]] || die "Cet installateur doit etre lance depuis un terminal interactif."
 
@@ -195,6 +207,7 @@ VM_NAME=${VM_NAME:-nut-peanut}
 VM_STORAGE=${VM_STORAGE:-$(first_storage_with_content images || true)}
 SNIPPET_STORAGE=${SNIPPET_STORAGE:-$(first_storage_with_content snippets || true)}
 ENABLE_SNIPPETS_STORAGE=non
+CREATE_SNIPPETS_STORAGE=non
 BRIDGE=${BRIDGE:-vmbr0}
 VLAN_TAG=${VLAN_TAG:-}
 VM_CORES=${VM_CORES:-1}
@@ -294,9 +307,9 @@ fi
 guest_id_is_free "$VMID" || die "Le VMID/CTID $VMID vient d'etre occupe. Relancez le script pour obtenir un nouvel identifiant."
 [[ -n "$VM_STORAGE" && -n "$SNIPPET_STORAGE" ]] || die "Stockage compatible introuvable."
 pvesm status -storage "$VM_STORAGE" >/dev/null 2>&1 || die "Stockage VM introuvable : $VM_STORAGE"
-pvesm status -storage "$SNIPPET_STORAGE" >/dev/null 2>&1 || die "Stockage snippets introuvable : $SNIPPET_STORAGE"
+pvesm status -storage "$SNIPPET_STORAGE" >/dev/null 2>&1 || [[ "$CREATE_SNIPPETS_STORAGE" == oui ]] || die "Stockage snippets introuvable : $SNIPPET_STORAGE"
 storage_has_content "$VM_STORAGE" images || die "$VM_STORAGE n'accepte pas le contenu images."
-if [[ "$ENABLE_SNIPPETS_STORAGE" != oui ]]; then
+if [[ "$ENABLE_SNIPPETS_STORAGE" != oui && "$CREATE_SNIPPETS_STORAGE" != oui ]]; then
   storage_has_content "$SNIPPET_STORAGE" snippets || die "$SNIPPET_STORAGE n'accepte pas le contenu snippets."
 fi
 [[ -d "/sys/class/net/$BRIDGE" ]] || die "Bridge introuvable : $BRIDGE"
@@ -327,6 +340,8 @@ else
 fi
 NET0="virtio,bridge=$BRIDGE"
 [[ -n "$VLAN_TAG" ]] && NET0+=",tag=$VLAN_TAG"
+SNIPPET_SUMMARY=$SNIPPET_STORAGE
+[[ "$CREATE_SNIPPETS_STORAGE" == oui ]] && SNIPPET_SUMMARY+=" (sera cree localement)"
 
 cat <<EOF
 
@@ -334,7 +349,7 @@ Resume
   VMID            : $VMID (prochain identifiant libre)
   VM              : $VM_NAME, $VM_CORES vCPU, $VM_MEMORY_MB Mo, disque $VM_DISK_SIZE
   Reseau          : $NETWORK_SUMMARY, bridge $BRIDGE${VLAN_TAG:+, VLAN $VLAN_TAG}
-  Stockages       : disque=$VM_STORAGE, snippets=$SNIPPET_STORAGE
+  Stockages       : disque=$VM_STORAGE, snippets=$SNIPPET_SUMMARY
   USB APC         : $USB_ID
   Fuseau horaire  : $TIMEZONE
   Client Proxmox  : $INSTALL_PVE_NUT_CLIENT${NUT_SERVER_ADDRESS:+ ($NUT_SERVER_ADDRESS)}
@@ -343,7 +358,11 @@ dialog_yes_no CONFIRM "CONFIRMATION" \
   "Creer maintenant la VM $VMID ($VM_NAME) ?\n\nCPU : $VM_CORES coeur(s)\nRAM : $VM_MEMORY_MB Mo\nDisque : $VM_DISK_SIZE sur $VM_STORAGE\nReseau : $NETWORK_SUMMARY\nUSB APC : $USB_ID\nClient NUT Proxmox : $INSTALL_PVE_NUT_CLIENT" non
 [[ "$CONFIRM" == oui ]] || die "Operation annulee."
 
-if [[ "$ENABLE_SNIPPETS_STORAGE" == oui ]]; then
+if [[ "$CREATE_SNIPPETS_STORAGE" == oui ]]; then
+  install -d -m 0755 /var/lib/vz
+  pvesm add dir "$SNIPPET_STORAGE" --path /var/lib/vz --content snippets --shared 0
+  log "Le stockage local $SNIPPET_STORAGE a ete cree pour les snippets cloud-init."
+elif [[ "$ENABLE_SNIPPETS_STORAGE" == oui ]]; then
   CURRENT_CONTENT=$(pvesm config "$SNIPPET_STORAGE" | sed -n -E 's/^[[:space:]]*content:?[[:space:]]+//p' | head -n 1)
   [[ -n "$CURRENT_CONTENT" ]] || die "Impossible de lire les types de contenu de $SNIPPET_STORAGE."
   pvesm set "$SNIPPET_STORAGE" --content "${CURRENT_CONTENT},snippets"
