@@ -160,3 +160,12 @@ Cette reprise utilise le bootstrap existant et sa configuration NUT generee. Ell
 Si NUT signale no USB buses found, verifiez lsusb et /dev/bus/usb dans la VM, puis le peripherique et la configuration USB de la VM sur Proxmox. Le message seul ne distingue pas un probleme de passthrough d'un probleme de visibilite pour le service.
 
 Simulation du bootstrap sans installation reelle : bash tests/guest.sh
+## Image Debian et validation du bootstrap
+
+L'installateur utilise desormais `debian-13-generic-amd64.qcow2`, avec le noyau standard et ses pilotes USB. L'image `genericcloud` utilisee auparavant ne fournissait pas le pilote xhci_pci dans la VM testee et rendait l'onduleur invisible. Le nom de l'image est defini une seule fois pour le telechargement, le cache et la recherche SHA-512. Un ancien cache genericcloud n'est pas reutilise et n'est pas supprime.
+
+Le bootstrap verifie le moteur Docker, la presence de l'USB selectionne, recharge les regles udev apres installation de NUT, relance explicitement l'enumerateur et le pilote, puis attend une reponse valide de upsc (15 essais). Il ne lance PeaNUT qu'apres ce controle et verifie ensuite que son conteneur fonctionne. Un echec produit un message explicite et un statut cloud-init en erreur. Ces controles confirment la communication au moment du bootstrap ; ils ne testent pas une coupure secteur ni le fonctionnement durable du systeme.
+
+Le message final sur Proxmox annonce uniquement le lancement de la VM. La reussite dans Debian doit etre confirmee avec `sudo cloud-init status --wait --long`, puis `sudo upsc apc@localhost`. Ne demarrez le client NUT Proxmox qu'apres cette validation.
+
+Les tests `bash tests/storage.sh` et `bash tests/guest.sh` sont des simulations sans Proxmox : ils couvrent les protections de stockage/VMID et les echecs USB, pilote NUT et conteneur PeaNUT. Ils ne remplacent pas un deploiement de validation sur Proxmox. Cette correction ne modifie aucune VM existante.

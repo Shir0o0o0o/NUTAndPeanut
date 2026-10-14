@@ -248,7 +248,9 @@ PEANUT_PORT=${PEANUT_PORT:-8080}
 PEANUT_IMAGE=${PEANUT_IMAGE:-brandawg93/peanut:latest}
 INSTALL_PVE_NUT_CLIENT=${INSTALL_PVE_NUT_CLIENT:-non}
 NUT_SERVER_ADDRESS=${NUT_SERVER_ADDRESS:-}
-DEBIAN_IMAGE_URL=https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2
+# generic fournit le noyau standard et ses pilotes USB, contrairement a genericcloud.
+DEBIAN_IMAGE_NAME=debian-13-generic-amd64.qcow2
+DEBIAN_IMAGE_URL=https://cloud.debian.org/images/cloud/trixie/latest/$DEBIAN_IMAGE_NAME
 DEBIAN_SHA512_URL=https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS
 IMAGE_CACHE_DIR=${IMAGE_CACHE_DIR:-/var/lib/vz}
 
@@ -402,11 +404,11 @@ fi
 
 log "Telechargement et verification de l'image Debian 13 officielle."
 mkdir -p "$IMAGE_CACHE_DIR"
-IMAGE_PATH="$IMAGE_CACHE_DIR/debian-13-genericcloud-amd64.qcow2"
+IMAGE_PATH="$IMAGE_CACHE_DIR/$DEBIAN_IMAGE_NAME"
 SUMS_PATH="$IMAGE_CACHE_DIR/SHA512SUMS.trixie"
 curl --fail --location --retry 3 --connect-timeout 15 -o "$SUMS_PATH.tmp" "$DEBIAN_SHA512_URL"
 mv -f "$SUMS_PATH.tmp" "$SUMS_PATH"
-EXPECTED_SHA512=$(awk '$2 == "debian-13-genericcloud-amd64.qcow2" || $2 == "./debian-13-genericcloud-amd64.qcow2" {print $1; exit}' "$SUMS_PATH")
+EXPECTED_SHA512=$(awk -v image="$DEBIAN_IMAGE_NAME" '$2 == image || $2 == "./" image {print $1; exit}' "$SUMS_PATH")
 [[ "$EXPECTED_SHA512" =~ ^[0-9a-fA-F]{128}$ ]] || die "Somme SHA-512 introuvable."
 if [[ ! -f "$IMAGE_PATH" ]] || ! printf '%s  %s\n' "$EXPECTED_SHA512" "$IMAGE_PATH" | sha512sum --check --status; then
   curl --fail --location --retry 3 --connect-timeout 15 -o "$IMAGE_PATH.tmp" "$DEBIAN_IMAGE_URL"
@@ -456,24 +458,41 @@ EOF
 cat >"$WORK_DIR/install-guest.sh" <<'GUEST'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+trap 'rc=$?; echo "ECHEC bootstrap Debian ligne $LINENO (code $rc). Consulter /var/log/cloud-init-output.log." >&2; exit "$rc"' ERR
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends nut nut-server nut-client docker.io docker-cli usbutils qemu-guest-agent ca-certificates sudo
 command -v docker >/dev/null || { echo 'Client Docker absent apres installation de docker-cli.' >&2; exit 1; }
 systemctl enable --now qemu-guest-agent docker
+docker info >/dev/null
+# Un fichier de configuration USB sur Proxmox ne garantit pas sa presence dans Debian.
+lsusb -d __USB_ID__ >/dev/null || { echo 'Onduleur USB __USB_ID__ invisible dans Debian. Verifier le noyau standard et le passthrough Proxmox.' >&2; exit 1; }
 install -d -m 0750 -o root -g nut /etc/nut
 for file in nut.conf ups.conf upsd.conf upsd.users upsmon.conf; do
   install -m 0640 -o root -g nut "/opt/bootstrap/$file" "/etc/nut/$file"
 done
 systemctl enable nut-server nut-monitor
+udevadm control --reload-rules
+udevadm trigger --subsystem-match=usb --action=add
+udevadm settle
+systemctl restart nut-driver-enumerator.service
+systemctl restart nut-driver@__UPS_NAME__.service
 systemctl restart nut-server
 systemctl restart nut-monitor
+UPS_READY=non
+for attempt in {1..15}; do
+  if upsc __UPS_NAME__@localhost >/dev/null 2>&1; then UPS_READY=oui; break; fi
+  sleep 2
+done
+[[ "$UPS_READY" == oui ]] || { echo 'NUT ne communique pas avec __UPS_NAME__. Consulter journalctl -u nut-driver@__UPS_NAME__.service -u nut-server.service.' >&2; exit 1; }
 install -d -m 0770 -o 1000 -g 1000 /opt/peanut/config
 docker pull __PEANUT_IMAGE__
 docker rm -f peanut 2>/dev/null || true
 docker run -d --name peanut --restart unless-stopped --network host -v /opt/peanut/config:/config -e WEB_HOST=0.0.0.0 -e WEB_PORT=__PEANUT_PORT__ __PEANUT_IMAGE__
+[[ "$(docker inspect --format '{{.State.Running}}' peanut)" == true ]] || { echo 'Le conteneur PeaNUT ne fonctionne pas. Consulter docker logs peanut.' >&2; exit 1; }
+echo 'Bootstrap termine : communication NUT et conteneur PeaNUT verifies.'
 GUEST
-sed -i -e "s|__PEANUT_IMAGE__|$PEANUT_IMAGE|g" -e "s|__PEANUT_PORT__|$PEANUT_PORT|g" "$WORK_DIR/install-guest.sh"
+sed -i -e "s|__PEANUT_IMAGE__|$PEANUT_IMAGE|g" -e "s|__PEANUT_PORT__|$PEANUT_PORT|g" -e "s|__USB_ID__|$USB_ID|g" -e "s|__UPS_NAME__|$UPS_NAME|g" "$WORK_DIR/install-guest.sh"
 chmod 0700 "$WORK_DIR/install-guest.sh"
 
 SNIPPET_VOLUME="${SNIPPET_STORAGE}:snippets/vm-${VMID}-nut-cloud-init.yml"
@@ -553,8 +572,8 @@ fi
 
 cat <<EOF
 
-Installation lancee avec succes.
-La VM a ete demarree ; l'installation dans Debian reste a verifier avec sudo cloud-init status --wait --long.
+VM creee et demarree. Initialisation Debian en cours, non encore validee.
+Verifier dans la VM : sudo cloud-init status --wait --long
   VMID       : $VMID
   VM         : $VM_NAME
   Reseau     : $NETWORK_SUMMARY
