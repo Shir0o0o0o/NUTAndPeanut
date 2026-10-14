@@ -1,34 +1,35 @@
-# VM NUT + PeaNUT pour Proxmox VE
+# NUT + PeaNUT pour Proxmox VE
 
-Ce dépôt contient un installateur interactif qui crée la VM **125** sous **Debian 13**, configure son réseau statique, passe l’UPS APC en USB, puis installe **NUT Server** et **PeaNUT**.
+Cet installateur interactif crÃ©e une **nouvelle VM Debian 13** sur Proxmox VE, transmet un onduleur APC en USB, puis installe **NUT Server** et **PeaNUT**. Il peut aussi configurer, avec votre accord, le client NUT sur lâ€™hÃ´te Proxmox afin de permettre son arrÃªt propre.
 
-## Installation rapide
+Le script ne contient ni VMID ni adresse IP imposÃ©s. Il demande les paramÃ¨tres propres Ã  chaque installation.
 
-Connectez-vous en `root` au nœud Proxmox, branchez l’UPS, puis lancez :
+## Fonctions principales
 
-```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/Shir0o0o0o/NUTAndPeanut/main/install-nut-vm.sh)"
-```
+- rÃ©cupÃ©ration automatique du prochain VMID libre avec `pvesh get /cluster/nextid` ;
+- double contrÃ´le du VMID/CTID avant la crÃ©ation, sans modification dâ€™une VM ou dâ€™un conteneur existant ;
+- choix entre DHCP et IPv4 statique ;
+- bridge, VLAN facultatif, DNS, passerelle, stockage et fuseau horaire configurables ;
+- dÃ©tection automatique des pÃ©riphÃ©riques USB APC (`051d:xxxx`) et confirmation de lâ€™identifiant ;
+- installation de NUT Server, NUT Monitor, Docker et PeaNUT dans la VM ;
+- client NUT de lâ€™hÃ´te Proxmox entiÃ¨rement facultatif ;
+- mots de passe NUT alÃ©atoires, affichÃ©s uniquement Ã  la fin de lâ€™installation ;
+- vÃ©rification SHA-512 de lâ€™image cloud Debian officielle.
 
-L’assistant détecte les stockages compatibles et l’UPS APC, demande la clé publique SSH et affiche un résumé avant toute création. Les mots de passe NUT sont générés automatiquement et affichés à la fin.
+## PrÃ©requis
 
-## Avant de commencer
+- Proxmox VE avec accÃ¨s `root` ;
+- un stockage acceptant les images de VM ;
+- un stockage acceptant le contenu **Snippets** ;
+- une clÃ© publique SSH ;
+- lâ€™onduleur APC branchÃ© en USB et visible avec `lsusb` ;
+- un accÃ¨s Internet depuis le nÅ“ud pour tÃ©lÃ©charger Debian et les paquets.
 
-1. Sur le nœud Proxmox, branchez l’UPS puis relevez son identifiant :
+Pour activer les snippets : **Datacenter â†’ Storage â†’ votre stockage â†’ Edit â†’ Snippets**.
 
-   ```bash
-   lsusb
-   ```
+## Installation
 
-   Une ligne APC ressemble souvent à `ID 051d:0002`, mais utilisez les valeurs réellement affichées.
-
-2. Préparez une clé publique SSH. L’assistant vous demandera de la coller.
-
-3. Vérifiez qu’au moins un stockage Proxmox autorise le type de contenu **Snippets** : **Datacenter > Storage > stockage > Edit**.
-
-## Exécution
-
-Vous pouvez aussi télécharger le script, l’inspecter, puis l’exécuter localement :
+La mÃ©thode la plus prudente consiste Ã  tÃ©lÃ©charger puis relire le script :
 
 ```bash
 curl -fLo install-nut-vm.sh https://raw.githubusercontent.com/Shir0o0o0o/NUTAndPeanut/main/install-nut-vm.sh
@@ -37,49 +38,66 @@ chmod +x install-nut-vm.sh
 ./install-nut-vm.sh
 ```
 
-Le script doit être exécuté en `root` directement sur Proxmox VE. Il vérifie l’image Debian avec la somme SHA-512 publiée par Debian et demande une confirmation finale avant de créer la VM.
+Lâ€™assistant affiche un rÃ©sumÃ© et demande une confirmation avant de crÃ©er quoi que ce soit.
 
-### Mode non interactif
+## RÃ©seau
 
-Toutes les options peuvent être fournies comme variables d’environnement. Dans ce mode, `SSH_PUBLIC_KEY` est obligatoire et `ASSUME_YES=true` supprime la confirmation :
+### DHCP
 
-```bash
-SSH_PUBLIC_KEY="$(cat ~/.ssh/id_ed25519.pub)" \
-VMID=125 \
-VM_IP_CIDR=192.168.1.25/24 \
-ASSUME_YES=true \
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/Shir0o0o0o/NUTAndPeanut/main/install-nut-vm.sh)"
+Le mode DHCP ne force aucune adresse. Une rÃ©servation DHCP est fortement recommandÃ©e, surtout si vous activez le client NUT sur Proxmox. Dans ce cas, lâ€™assistant demande lâ€™adresse IP rÃ©servÃ©e ou un nom DNS stable de la VM.
+
+### Adresse statique
+
+Lâ€™assistant demande lâ€™adresse avec son prÃ©fixe CIDR, la passerelle et le DNS. Exemple : `192.168.10.50/24`.
+
+## Onduleur USB APC
+
+Le script recherche les identifiants `051d:xxxx`. Il propose lâ€™identifiant trouvÃ©, mais vous laisse le corriger. Il refuse de continuer si aucun pÃ©riphÃ©rique ou plusieurs pÃ©riphÃ©riques possÃ¨dent finalement la paire sÃ©lectionnÃ©e.
+
+Exemple constatÃ© sur certains modÃ¨les APC :
+
+```text
+051d:0003
 ```
 
-## Après le déploiement
+Utilisez toujours la valeur rÃ©ellement affichÃ©e par `lsusb` sur votre hÃ´te.
 
-Attendez la fin de l’initialisation :
+## Client NUT Proxmox facultatif
+
+Si vous choisissez de lâ€™installer, le script :
+
+1. installe `nut-client` sur lâ€™hÃ´te ;
+2. sauvegarde les fichiers NUT existants avec un suffixe horodatÃ© ;
+3. configure lâ€™hÃ´te comme client secondaire du serveur NUT de la VM ;
+4. laisse le redÃ©marrage du service Ã  effectuer aprÃ¨s la fin de lâ€™initialisation de la VM.
+
+Commande Ã  lancer une fois NUT opÃ©rationnel dans la VM :
 
 ```bash
-ssh nutadmin@192.168.1.25 'cloud-init status --wait'
-ssh nutadmin@192.168.1.25 'sudo upsc apc@localhost'
+systemctl restart nut-monitor
+systemctl status nut-monitor --no-pager
 ```
 
-Ouvrez ensuite `http://192.168.1.25:8080`. Dans PeaNUT, ajoutez un serveur NUT avec :
+## AprÃ¨s la crÃ©ation
 
-- hôte : `127.0.0.1` ;
-- port : `3493` ;
-- utilisateur : valeur de `NUT_PEANUT_USER` ;
-- mot de passe : valeur de `NUT_PEANUT_PASSWORD`.
+En DHCP, retrouvez lâ€™adresse de la VM dans votre serveur DHCP ou avec lâ€™agent invitÃ© Proxmox lorsque celui-ci est prÃªt. En statique, utilisez lâ€™adresse saisie pendant lâ€™installation.
 
-## Relance et sécurité
+Attendez la fin de cloud-init, puis vÃ©rifiez NUT :
 
-- Une nouvelle exécution ne supprime jamais une VM 125 existante ni son disque.
-- Le script refuse de modifier une VM 125 existante si elle ne porte pas le nom attendu `nut`.
-- Le fichier cloud-init contient les identifiants NUT et est créé avec le mode `0600`.
-- L’utilisateur Debian n’accepte que l’authentification SSH par clé.
-- Si la VM existe déjà et tourne, le script ne la redémarre pas automatiquement.
-- Sur une VM déjà initialisée, cloud-init peut considérer ses étapes « une fois par instance » comme terminées. Le script met bien à jour la configuration Proxmox, mais ne force pas une réinitialisation cloud-init dans l’invité.
-- Le passthrough par Vendor/Product ID suppose qu’un seul périphérique possède cette paire d’identifiants.
+```bash
+ssh nutadmin@ADRESSE_DE_LA_VM 'cloud-init status --wait'
+ssh nutadmin@ADRESSE_DE_LA_VM 'sudo upsc apc@localhost'
+```
 
-## Sécurité
+PeaNUT est exposÃ© sur le port `8080` par dÃ©faut. Ajoutez ensuite le serveur NUT local `127.0.0.1:3493` dans PeaNUT avec les identifiants affichÃ©s par lâ€™installateur.
 
-- Le dépôt ne contient aucun mot de passe, jeton ou clé SSH personnelle.
-- Ne placez jamais une clé privée dans `SSH_PUBLIC_KEY` : seule la ligne du fichier `.pub` est attendue.
-- Lire un script avant de l’envoyer directement à `bash` reste la méthode la plus prudente.
-- Pour une installation reproductible, utilisez à terme l’URL d’une version GitHub figée plutôt que la branche `main`.
+## SÃ©curitÃ© et limites
+
+- Le VMID est calculÃ© automatiquement et revÃ©rifiÃ© juste avant `qm create`.
+- Si ce numÃ©ro appartient entre-temps Ã  une VM ou Ã  un conteneur, le script sâ€™arrÃªte.
+- Le script ne rÃ©utilise, ne reconfigure et ne supprime jamais un invitÃ© existant.
+- Le snippet cloud-init contient temporairement les identifiants NUT et est crÃ©Ã© avec des permissions restrictives.
+- Seule lâ€™authentification SSH par clÃ© est activÃ©e pour lâ€™utilisateur Debian.
+- Les fichiers NUT existants de lâ€™hÃ´te sont sauvegardÃ©s avant configuration du client facultatif.
+- Aucun dÃ©ploiement rÃ©el ne peut Ãªtre garanti sans test sur une installation Proxmox ; relisez toujours le script avant exÃ©cution.
+
