@@ -70,63 +70,78 @@ validate_token() {
   [[ "$2" =~ ^[A-Za-z0-9_.-]+$ ]] || die "$1 contient un caractere non autorise."
 }
 
-storage_has_content() {
-  local content
-  content=$(pvesm config "$1" 2>/dev/null | sed -n -E 's/^[[:space:]]*content:?[[:space:]]+//p' | head -n 1)
-  [[ ",$content," == *",$2,"* ]]
+# Ne pas utiliser « pvesm config » : cette sous-commande n'existe pas.
+# Le filtre natif applique les capacites et valeurs par defaut des backends.
+# Capturer le producteur avant awk : une erreur ne doit pas devenir une liste vide.
+storage_status() {
+  local output
+  output=$(pvesm status "$@") || { printf 'Impossible de lire pvesm status.\n' >&2; return 1; }
+  [[ "$output" == Name* ]] || { printf 'Format pvesm status inattendu.\n' >&2; return 1; }
+  printf '%s\n' "$output"
 }
 
 list_storages_with_content() {
-  local wanted=$1 storage found=0
-  while read -r storage; do
-    [[ -n "$storage" ]] || continue
-    printf '%s\n' "$storage"
-    found=1
-  done < <(pvesm status -content "$wanted" 2>/dev/null | awk 'NR > 1 && $1 != "" {print $1}')
+  local output
+  output=$(storage_status --content "$1") || return 1
+  awk 'NR > 1 && $3 == "active" {print $1}' <<<"$output"
+}
 
-  # Compatibilite avec les versions/configurations PVE ou le filtre -content
-  # ne renvoie rien : relire directement la configuration de chaque stockage.
-  if (( found == 0 )); then
-    while read -r storage; do
-      [[ -n "$storage" ]] || continue
-      storage_has_content "$storage" "$wanted" && printf '%s\n' "$storage"
-    done < <(list_active_storages)
-  fi
+storage_has_content() {
+  local candidates
+  candidates=$(list_storages_with_content "$2") || return 2
+  grep -Fxq -- "$1" <<<"$candidates"
 }
 
 list_active_storages() {
-  pvesm status 2>/dev/null | awk 'NR > 1 && $1 != "" && $3 != "disabled" {print $1}'
+  local output
+  output=$(storage_status) || return 1
+  awk 'NR > 1 && $3 == "active" {print $1}' <<<"$output"
 }
 
-first_storage_with_content() {
-  local storage
-  while read -r storage; do
-    [[ -n "$storage" ]] && storage_has_content "$storage" "$1" && { printf '%s' "$storage"; return 0; }
-  done < <(list_storages_with_content "$1")
-  return 1
+# Lecture d'une section seulement, tous types (zfspool, lvmthin, dir, etc.).
+# Ne jamais quitter awk tot : pas de SIGPIPE sous pipefail.
+storage_property() {
+  awk -v id="$1" -v key="$2" '
+    /^[^[:space:]#][^:]*:[[:space:]]/ {
+      selected=($2 == id)
+      if (selected && key == "type") {value=$1; sub(/:$/, "", value)}
+      next
+    }
+    selected && $1 == key {value=$0; sub(/^[[:space:]]*[^[:space:]]+[[:space:]]+/, "", value); sub(/[[:space:]]+$/, "", value)}
+    END {print value}
+  ' "${STORAGE_CONFIG_FILE:-/etc/pve/storage.cfg}"
+}
+
+storage_exists() {
+  local type
+  type=$(storage_property "$1" type) || return 2
+  [[ -n "$type" ]]
 }
 
 choose_storage() {
-  local variable=$1 wanted=$2 label=$3 current choice index storage content free state candidate suffix
+  local variable=$1 wanted=$2 label=$3 current choice index storage content free state candidate suffix candidates output
   local -a storages=()
   local -a menu=()
   current=${!variable-}
+  candidates=$(list_storages_with_content "$wanted") || die "Detection des stockages impossible ($wanted)."
   while read -r storage; do
     [[ -n "$storage" ]] && storages+=("$storage")
-  done < <(list_storages_with_content "$wanted")
+  done <<<"$candidates"
 
   if (( ${#storages[@]} == 0 )) && [[ "$wanted" == snippets ]]; then
+    candidates=$(list_active_storages) || die "Detection des stockages actifs impossible."
     while read -r storage; do
       [[ -n "$storage" ]] || continue
-      if pvesm config "$storage" 2>/dev/null | grep -q '^dir:'; then storages+=("$storage"); fi
-    done < <(list_active_storages)
+      content=$(storage_property "$storage" type) || die "Configuration stockage illisible."
+      if [[ "$content" == dir ]]; then storages+=("$storage"); fi
+    done <<<"$candidates"
     if (( ${#storages[@]} > 0 )); then
       ENABLE_SNIPPETS_STORAGE=oui
       warn "Le type de contenu Snippets n'est active sur aucun stockage. Il sera ajoute au stockage choisi apres votre confirmation finale."
     else
       candidate=nut-snippets
       suffix=2
-      while pvesm config "$candidate" >/dev/null 2>&1; do
+      while storage_exists "$candidate"; do
         candidate="nut-snippets-$suffix"
         ((suffix++))
       done
@@ -136,7 +151,10 @@ choose_storage() {
       return
     fi
   fi
-  (( ${#storages[@]} > 0 )) || die "Aucun stockage actif n'accepte le contenu '$wanted'."
+  (( ${#storages[@]} > 0 )) || die "Aucun stockage actif n'accepte '$wanted'. Diagnostic : pvesm status --content $wanted ; cat /etc/pve/storage.cfg"
+  if [[ -n "$current" ]] && ! grep -Fxq -- "$current" <<<"$(printf '%s\n' "${storages[@]}")"; then
+    warn "Le stockage demande '$current' est indisponible pour '$wanted'. Choisissez une cible compatible ci-dessous."
+  fi
   if (( ${#storages[@]} == 1 )); then
     printf -v "$variable" '%s' "${storages[0]}"
     printf '  %s : %s (selection automatique)\n' "$label" "${storages[0]}"
@@ -145,7 +163,8 @@ choose_storage() {
 
   for index in "${!storages[@]}"; do
     storage=${storages[$index]}
-    free=$(pvesm status -storage "$storage" 2>/dev/null | awk 'NR > 1 {printf "%.1f GiB libres", $6/1024/1024}')
+    output=$(storage_status --storage "$storage") || die "Etat du stockage $storage inaccessible."
+    free=$(awk 'NR > 1 {printf "%.1f GiB libres", $6/1024/1024}' <<<"$output")
     state=OFF
     [[ "$storage" == "$current" || ( -z "$current" && $index -eq 0 ) ]] && state=ON
     menu+=("$storage" "${free:-stockage actif}" "$state")
@@ -181,6 +200,8 @@ next_free_vmid() {
 }
 
 guest_id_is_free() {
+  # L'API verifie aussi les VM/CT des autres noeuds et echoue en cas de doute.
+  pvesh get /cluster/nextid --vmid "$1" --output-format json >/dev/null || return 1
   ! qm status "$1" >/dev/null 2>&1 && ! pct status "$1" >/dev/null 2>&1
 }
 
@@ -198,14 +219,15 @@ on_error() {
 trap on_error ERR
 
 [[ $EUID -eq 0 ]] || die "Executez ce script en root sur Proxmox."
-for cmd in qm pct pvesm pvesh curl sha512sum lsusb awk grep sed base64 openssl ip ssh-keygen whiptail install; do require_command "$cmd"; done
+for cmd in qm pct pvesm pvesh curl sha512sum lsusb awk grep sed base64 openssl ip ssh-keygen whiptail install findmnt df readlink; do require_command "$cmd"; done
 [[ -r /etc/pve/.version ]] || die "Ce systeme ne semble pas etre un noeud Proxmox VE."
+[[ -r /etc/pve/storage.cfg ]] || die "Configuration stockage illisible : /etc/pve/storage.cfg"
 [[ -r /dev/tty && -w /dev/tty ]] || die "Cet installateur doit etre lance depuis un terminal interactif."
 
 VMID=$(next_free_vmid)
 VM_NAME=${VM_NAME:-nut-peanut}
-VM_STORAGE=${VM_STORAGE:-$(first_storage_with_content images || true)}
-SNIPPET_STORAGE=${SNIPPET_STORAGE:-$(first_storage_with_content snippets || true)}
+VM_STORAGE=${VM_STORAGE:-}
+SNIPPET_STORAGE=${SNIPPET_STORAGE:-}
 ENABLE_SNIPPETS_STORAGE=non
 CREATE_SNIPPETS_STORAGE=non
 BRIDGE=${BRIDGE:-vmbr0}
@@ -228,7 +250,7 @@ INSTALL_PVE_NUT_CLIENT=${INSTALL_PVE_NUT_CLIENT:-non}
 NUT_SERVER_ADDRESS=${NUT_SERVER_ADDRESS:-}
 DEBIAN_IMAGE_URL=https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2
 DEBIAN_SHA512_URL=https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS
-IMAGE_CACHE_DIR=${IMAGE_CACHE_DIR:-/var/lib/vz/template/qcow2}
+IMAGE_CACHE_DIR=${IMAGE_CACHE_DIR:-/var/lib/vz}
 
 mapfile -t APC_USB_IDS < <(detect_apc_usb_ids)
 if (( ${#APC_USB_IDS[@]} == 1 )); then
@@ -261,6 +283,16 @@ fi
 
 choose_storage VM_STORAGE images "Choisissez le stockage du disque de la VM"
 choose_storage SNIPPET_STORAGE snippets "Choisissez le stockage de la configuration cloud-init"
+
+# Le qcow2 source est un fichier sur un systeme monte, pas un volume ZFS/LVM.
+# Exiger un dossier existant evite de creer silencieusement un chemin de montage
+# absent sur la partition racine. Aucun mkdir avant la confirmation finale.
+dialog_input IMAGE_CACHE_DIR "TELECHARGEMENT DEBIAN" "Dossier EXISTANT sur la partition dediee au telechargement (independant du disque VM sur $VM_STORAGE). Le sous-dossier nut-peanut-cache sera utilise." "$IMAGE_CACHE_DIR"
+[[ "$IMAGE_CACHE_DIR" == /* && -d "$IMAGE_CACHE_DIR" && -w "$IMAGE_CACHE_DIR" ]] || die "Le dossier de telechargement doit etre absolu, existant et accessible en ecriture. Montez d'abord votre partition dediee."
+IMAGE_CACHE_DIR=$(readlink -f -- "$IMAGE_CACHE_DIR")/nut-peanut-cache
+DOWNLOAD_FILESYSTEM=$(findmnt -n -T "${IMAGE_CACHE_DIR%/nut-peanut-cache}" -o SOURCE,TARGET) || die "Impossible d'identifier la partition de telechargement."
+printf '  Partition de telechargement : %s\n' "$DOWNLOAD_FILESYSTEM"
+df -h -- "${IMAGE_CACHE_DIR%/nut-peanut-cache}"
 
 if [[ "$SETTINGS_MODE" == advanced ]]; then
   dialog_input BRIDGE "BRIDGE RESEAU" "Bridge Proxmox utilise par la VM" "$BRIDGE"
@@ -306,9 +338,7 @@ fi
 [[ "$VM_DISK_SIZE" =~ ^[1-9][0-9]*[GM]$ ]] || die "Taille de disque invalide. Exemple attendu : 8G ou 20G."
 guest_id_is_free "$VMID" || die "Le VMID/CTID $VMID vient d'etre occupe. Relancez le script pour obtenir un nouvel identifiant."
 [[ -n "$VM_STORAGE" && -n "$SNIPPET_STORAGE" ]] || die "Stockage compatible introuvable."
-pvesm status -storage "$VM_STORAGE" >/dev/null 2>&1 || die "Stockage VM introuvable : $VM_STORAGE"
-pvesm status -storage "$SNIPPET_STORAGE" >/dev/null 2>&1 || [[ "$CREATE_SNIPPETS_STORAGE" == oui ]] || die "Stockage snippets introuvable : $SNIPPET_STORAGE"
-storage_has_content "$VM_STORAGE" images || die "$VM_STORAGE n'accepte pas le contenu images."
+storage_has_content "$VM_STORAGE" images || die "$VM_STORAGE n'est plus actif/compatible images, ou son etat est illisible. Diagnostic : pvesm status --content images ; pvesh get /storage/$VM_STORAGE --output-format json"
 if [[ "$ENABLE_SNIPPETS_STORAGE" != oui && "$CREATE_SNIPPETS_STORAGE" != oui ]]; then
   storage_has_content "$SNIPPET_STORAGE" snippets || die "$SNIPPET_STORAGE n'accepte pas le contenu snippets."
 fi
@@ -350,12 +380,13 @@ Resume
   VM              : $VM_NAME, $VM_CORES vCPU, $VM_MEMORY_MB Mo, disque $VM_DISK_SIZE
   Reseau          : $NETWORK_SUMMARY, bridge $BRIDGE${VLAN_TAG:+, VLAN $VLAN_TAG}
   Stockages       : disque=$VM_STORAGE, snippets=$SNIPPET_SUMMARY
+  Telechargement  : $IMAGE_CACHE_DIR ($DOWNLOAD_FILESYSTEM)
   USB APC         : $USB_ID
   Fuseau horaire  : $TIMEZONE
   Client Proxmox  : $INSTALL_PVE_NUT_CLIENT${NUT_SERVER_ADDRESS:+ ($NUT_SERVER_ADDRESS)}
 EOF
 dialog_yes_no CONFIRM "CONFIRMATION" \
-  "Creer maintenant la VM $VMID ($VM_NAME) ?\n\nCPU : $VM_CORES coeur(s)\nRAM : $VM_MEMORY_MB Mo\nDisque : $VM_DISK_SIZE sur $VM_STORAGE\nReseau : $NETWORK_SUMMARY\nUSB APC : $USB_ID\nClient NUT Proxmox : $INSTALL_PVE_NUT_CLIENT" non
+  "Creer maintenant la VM $VMID ($VM_NAME) ?\n\nCPU : $VM_CORES coeur(s)\nRAM : $VM_MEMORY_MB Mo\nDisque : $VM_DISK_SIZE sur $VM_STORAGE\nTelechargement : $IMAGE_CACHE_DIR\nPartition : $DOWNLOAD_FILESYSTEM\nReseau : $NETWORK_SUMMARY\nUSB APC : $USB_ID\nClient NUT Proxmox : $INSTALL_PVE_NUT_CLIENT" non
 [[ "$CONFIRM" == oui ]] || die "Operation annulee."
 
 if [[ "$CREATE_SNIPPETS_STORAGE" == oui ]]; then
@@ -363,7 +394,7 @@ if [[ "$CREATE_SNIPPETS_STORAGE" == oui ]]; then
   pvesm add dir "$SNIPPET_STORAGE" --path /var/lib/vz --content snippets --shared 0
   log "Le stockage local $SNIPPET_STORAGE a ete cree pour les snippets cloud-init."
 elif [[ "$ENABLE_SNIPPETS_STORAGE" == oui ]]; then
-  CURRENT_CONTENT=$(pvesm config "$SNIPPET_STORAGE" | sed -n -E 's/^[[:space:]]*content:?[[:space:]]+//p' | head -n 1)
+  CURRENT_CONTENT=$(storage_property "$SNIPPET_STORAGE" content)
   [[ -n "$CURRENT_CONTENT" ]] || die "Impossible de lire les types de contenu de $SNIPPET_STORAGE."
   pvesm set "$SNIPPET_STORAGE" --content "${CURRENT_CONTENT},snippets"
   log "Le contenu Snippets a ete active sur $SNIPPET_STORAGE."
@@ -474,7 +505,7 @@ write_files:
 runcmd:
   - [/opt/bootstrap/install-guest.sh]
 EOF
-install -m 0600 "$SNIPPET_FILE.tmp" "$SNIPPET_FILE"
+ln -- "$SNIPPET_FILE.tmp" "$SNIPPET_FILE" || die "Snippet deja existant ou creation impossible : $SNIPPET_FILE. Aucun fichier existant remplace."
 rm -f "$SNIPPET_FILE.tmp"
 
 # Protection anti-course : aucun qm set/importdisk n'est execute avant cette verification.

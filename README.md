@@ -44,7 +44,40 @@ Lâ€™assistant reprend le fonctionnement familier des Community Scripts Prox
 
 Le mode avancÃ© permet de modifier le nom, le CPU, la mÃ©moire, le disque, le bridge, le VLAN, le rÃ©seau et lâ€™installation facultative du client NUT sur Proxmox. Si aucun stockage nâ€™autorise encore les snippets, le script peut ajouter ce type de contenu Ã  un stockage Proxmox de type **Directory** aprÃ¨s la confirmation finale. Si aucun stockage Directory nâ€™existe, il crÃ©e un petit stockage local `nut-snippets` dans `/var/lib/vz`, rÃ©servÃ© aux fichiers cloud-init ; le disque de la VM reste sur le stockage choisi.
 
-La liste des stockages compatibles est obtenue avec le filtre natif Proxmox `pvesm status -content images` ou `-content snippets`, comme dans les Community Scripts. Une seconde dÃ©tection relit la configuration de chaque stockage si ce filtre ne renvoie rien. Cela fonctionne avec les stockages Directory, LVM, LVM-thin, ZFS, Ceph et les autres types pris en charge par Proxmox.
+La découverte et la validation utilisent la même commande native : `pvesm status --content images` ou `--content snippets`. Seules les lignes dont l'état vaut exactement `active` sont proposées. Proxmox applique les capacités et les contenus par défaut de chaque backend (Directory, ZFS, LVM, LVM-thin, Ceph, NFS, etc.). Une erreur de commande interrompt la sélection ; elle n'est jamais interprétée comme une liste vide. `pvesm config` n'existe pas et n'est plus utilisé. La lecture de `/etc/pve/storage.cfg`, section par section, sert à identifier les Directory et à conserver les contenus existants lorsqu'on ajoute les snippets. Si le contenu existant ne peut pas être lu, l'ajout est refusé.
+
+### Téléchargement et disque VM : deux destinations indépendantes
+
+Le choix **stockage du disque VM** détermine la destination de `qm importdisk` et du disque cloud-init. Un pool ZFS ou LVM-thin compatible `images` convient à cet usage ; il ne fournit pas nécessairement de dossier pour télécharger un fichier qcow2.
+
+Le choix **Téléchargement Debian** demande séparément un dossier absolu **déjà existant et monté**, sur la partition dédiée au téléchargement. Le script affiche sa partition et l'espace libre, puis utilise son sous-dossier `nut-peanut-cache`. Il ne partitionne, ne formate et ne monte aucun disque. Vérifiez la partition affichée : un dossier existant peut aussi se trouver sur la racine. Le dossier proposé par défaut est `/var/lib/vz` ; il ne désigne pas automatiquement votre partition dédiée. Le cache Debian est conservé et vérifié par SHA-512 avant réutilisation.
+
+Exemple : choisissez `/mnt/downloads` pour le téléchargement (après avoir monté la partition) et `ssdpool` pour le disque VM. Le résumé et la confirmation affichent les deux destinations. La variable `IMAGE_CACHE_DIR` préremplit le dossier proposé.
+
+### Diagnostic du stockage `ssdpool`
+
+Ces commandes sont en lecture seule :
+
+```bash
+pvesm status
+pvesm status --content images
+pvesm status --content snippets
+pvesh get /storage/ssdpool --output-format json
+cat /etc/pve/storage.cfg
+findmnt -T /mnt/downloads
+df -h /mnt/downloads
+```
+
+`ssdpool` doit apparaître avec l'état `active` dans la liste filtrée `images`. Sinon, le script l'exclut et propose les autres cibles compatibles ; s'il n'en existe aucune, il s'arrête avec un diagnostic. Vérifiez le contenu autorisé, l'activation, la disponibilité sur le nœud et le backend. Le script ne force jamais l'ajout de `images` à un backend incompatible.
+
+### Vérifications sans Proxmox
+
+```bash
+bash -n install-nut-vm.sh
+bash tests/storage.sh
+```
+
+Les simulations remplacent les commandes Proxmox : ZFS, LVM-thin avec contenu par défaut, Ceph, Directory, snippets NFS, stockages inactifs/désactivés, échec de commande, absence de cible, nom de stockage déjà pris et protections VMID/CTID. Elles ne déploient aucune VM.
 
 Une clÃ© SSH existante du compte `root` est rÃ©utilisÃ©e automatiquement. Si aucune clÃ© nâ€™existe, une clÃ© dÃ©diÃ©e est crÃ©Ã©e sous `/root/.ssh/nut-peanut_ed25519` ; aucune saisie manuelle de clÃ© nâ€™est nÃ©cessaire.
 
