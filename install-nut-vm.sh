@@ -72,15 +72,23 @@ validate_token() {
 
 storage_has_content() {
   local content
-  content=$(pvesm config "$1" 2>/dev/null | awk -F': ' '$1 == "content" {print $2}')
+  content=$(pvesm config "$1" 2>/dev/null | sed -n -E 's/^[[:space:]]*content:?[[:space:]]+//p' | head -n 1)
   [[ ",$content," == *",$2,"* ]]
+}
+
+list_storages_with_content() {
+  pvesm status --content "$1" 2>/dev/null | awk 'NR > 1 && $1 != "" {print $1}'
+}
+
+list_active_storages() {
+  pvesm status 2>/dev/null | awk 'NR > 1 && $1 != "" && $3 != "disabled" {print $1}'
 }
 
 first_storage_with_content() {
   local storage
   while read -r storage; do
     [[ -n "$storage" ]] && storage_has_content "$storage" "$1" && { printf '%s' "$storage"; return 0; }
-  done < <(pvesm status 2>/dev/null | awk 'NR > 1 && $3 == "active" {print $1}')
+  done < <(list_storages_with_content "$1")
   return 1
 }
 
@@ -90,14 +98,14 @@ choose_storage() {
   local -a menu=()
   current=${!variable-}
   while read -r storage; do
-    [[ -n "$storage" ]] && storage_has_content "$storage" "$wanted" && storages+=("$storage")
-  done < <(pvesm status 2>/dev/null | awk 'NR > 1 && $3 == "active" {print $1}')
+    [[ -n "$storage" ]] && storages+=("$storage")
+  done < <(list_storages_with_content "$wanted")
 
   if (( ${#storages[@]} == 0 )) && [[ "$wanted" == snippets ]]; then
     while read -r storage; do
       [[ -n "$storage" ]] || continue
       if pvesm config "$storage" 2>/dev/null | grep -q '^dir:'; then storages+=("$storage"); fi
-    done < <(pvesm status 2>/dev/null | awk 'NR > 1 && $3 == "active" {print $1}')
+    done < <(list_active_storages)
     (( ${#storages[@]} > 0 )) || die "Aucun stockage de type Directory ne peut accueillir les snippets cloud-init."
     ENABLE_SNIPPETS_STORAGE=oui
     warn "Le type de contenu Snippets n'est active sur aucun stockage. Il sera ajoute au stockage choisi apres votre confirmation finale."
@@ -322,7 +330,7 @@ dialog_yes_no CONFIRM "CONFIRMATION" \
 [[ "$CONFIRM" == oui ]] || die "Operation annulee."
 
 if [[ "$ENABLE_SNIPPETS_STORAGE" == oui ]]; then
-  CURRENT_CONTENT=$(pvesm config "$SNIPPET_STORAGE" | awk -F': ' '$1 == "content" {print $2}')
+  CURRENT_CONTENT=$(pvesm config "$SNIPPET_STORAGE" | sed -n -E 's/^[[:space:]]*content:?[[:space:]]+//p' | head -n 1)
   [[ -n "$CURRENT_CONTENT" ]] || die "Impossible de lire les types de contenu de $SNIPPET_STORAGE."
   pvesm set "$SNIPPET_STORAGE" --content "${CURRENT_CONTENT},snippets"
   log "Le contenu Snippets a ete active sur $SNIPPET_STORAGE."
