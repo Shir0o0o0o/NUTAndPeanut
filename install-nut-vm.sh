@@ -458,7 +458,8 @@ cat >"$WORK_DIR/install-guest.sh" <<'GUEST'
 set -Eeuo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends nut nut-server nut-client docker.io qemu-guest-agent ca-certificates sudo
+apt-get install -y --no-install-recommends nut nut-server nut-client docker.io docker-cli usbutils qemu-guest-agent ca-certificates sudo
+command -v docker >/dev/null || { echo 'Client Docker absent apres installation de docker-cli.' >&2; exit 1; }
 systemctl enable --now qemu-guest-agent docker
 install -d -m 0750 -o root -g nut /etc/nut
 for file in nut.conf ups.conf upsd.conf upsd.users upsmon.conf; do
@@ -553,6 +554,7 @@ fi
 cat <<EOF
 
 Installation lancee avec succes.
+La VM a ete demarree ; l'installation dans Debian reste a verifier avec sudo cloud-init status --wait --long.
   VMID       : $VMID
   VM         : $VM_NAME
   Reseau     : $NETWORK_SUMMARY

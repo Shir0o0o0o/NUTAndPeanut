@@ -142,3 +142,21 @@ PeaNUT est exposÃ© sur le port `8080` par dÃ©faut. Ajoutez ensuite le serveu
 - Les fichiers NUT existants de lâ€™hÃ´te sont sauvegardÃ©s avant configuration du client facultatif.
 - Aucun dÃ©ploiement rÃ©el ne peut Ãªtre garanti sans test sur une installation Proxmox ; relisez toujours le script avant exÃ©cution.
 
+## Reprise Debian 13 : Docker et USB
+
+La fin du script hote confirme le demarrage de la VM, pas la reussite de cloud-init. Debian 13 separe le moteur docker.io du client docker-cli : les deux sont maintenant installes explicitement, ainsi que usbutils pour lsusb.
+
+Dans une VM deja creee avec l'erreur docker: command not found :
+
+```bash
+sudo apt-get update
+sudo apt-get install -y docker-cli usbutils
+sudo bash /opt/bootstrap/install-guest.sh
+sudo docker ps --filter name=peanut
+```
+
+Cette reprise utilise le bootstrap existant et sa configuration NUT generee. Elle recree le conteneur PeaNUT en conservant /opt/peanut/config. Ne relancez pas l'installateur Proxmox. Le statut historique de cloud-init peut rester en erreur apres cette reparation manuelle : verifiez les services directement.
+
+Si NUT signale no USB buses found, verifiez lsusb et /dev/bus/usb dans la VM, puis le peripherique et la configuration USB de la VM sur Proxmox. Le message seul ne distingue pas un probleme de passthrough d'un probleme de visibilite pour le service.
+
+Simulation du bootstrap sans installation reelle : bash tests/guest.sh
