@@ -42,7 +42,7 @@ Lâ€™assistant affiche un rÃ©sumÃ© et demande une confirmation avant de 
 
 Lâ€™assistant reprend le fonctionnement familier des Community Scripts Proxmox : il commence par proposer **ParamÃ¨tres par dÃ©faut** ou **AvancÃ©s**, puis utilise des fenÃªtres de sÃ©lection claires. Le mode par dÃ©faut crÃ©e une VM avec 1 cÅ“ur, 1 Go de RAM, un disque de 8 Go et le DHCP sur `vmbr0`. Il ne demande que le stockage lorsquâ€™un choix est nÃ©cessaire et une confirmation finale.
 
-Le mode avancÃ© permet de modifier le nom, le CPU, la mÃ©moire, le disque, le bridge, le VLAN, le rÃ©seau et lâ€™installation facultative du client NUT sur Proxmox. Si aucun stockage nâ€™autorise encore les snippets, le script peut ajouter ce type de contenu Ã  un stockage Proxmox de type **Directory** aprÃ¨s la confirmation finale.
+Le mode avancÃ© permet de modifier le nom, le CPU, la mÃ©moire, le disque, le bridge, le VLAN, le rÃ©seau et lâ€™installation facultative du client NUT sur Proxmox. Si aucun stockage nâ€™autorise encore les snippets, le script peut ajouter ce type de contenu Ã  un stockage Proxmox de type **Directory** aprÃ¨s la confirmation finale. Si aucun stockage Directory nâ€™existe, il crÃ©e un petit stockage local `nut-snippets` dans `/var/lib/vz`, rÃ©servÃ© aux fichiers cloud-init ; le disque de la VM reste sur le stockage choisi.
 
 La liste des stockages compatibles est obtenue avec le filtre natif Proxmox `pvesm status -content images` ou `-content snippets`, comme dans les Community Scripts. Une seconde dÃ©tection relit la configuration de chaque stockage si ce filtre ne renvoie rien. Cela fonctionne avec les stockages Directory, LVM, LVM-thin, ZFS, Ceph et les autres types pris en charge par Proxmox.
 
