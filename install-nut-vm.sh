@@ -32,6 +32,27 @@ prompt_yes_no() {
   if is_yes "$answer"; then printf -v "$variable" '%s' oui; else printf -v "$variable" '%s' non; fi
 }
 
+dialog_input() {
+  local variable=$1 title=$2 message=$3 default_value=${4-} result
+  if result=$(whiptail --title "$title" --inputbox "$message" 10 68 "$default_value" 3>&1 1>&2 2>&3); then
+    printf -v "$variable" '%s' "$result"
+  else
+    die "Installation annulee par l'utilisateur."
+  fi
+}
+
+dialog_yes_no() {
+  local variable=$1 title=$2 message=$3 default_value=${4:-non} rc=0
+  local -a default_button=()
+  [[ "$default_value" == non ]] && default_button=(--defaultno)
+  whiptail --title "$title" "${default_button[@]}" --yesno "$message" 13 72 || rc=$?
+  case $rc in
+    0) printf -v "$variable" '%s' oui ;;
+    1) printf -v "$variable" '%s' non ;;
+    *) die "Installation annulee par l'utilisateur." ;;
+  esac
+}
+
 validate_ipv4() {
   local address=$1 part
   [[ "$address" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
@@ -63,6 +84,61 @@ first_storage_with_content() {
   return 1
 }
 
+choose_storage() {
+  local variable=$1 wanted=$2 label=$3 current choice index storage content free state
+  local -a storages=()
+  local -a menu=()
+  current=${!variable-}
+  while read -r storage; do
+    [[ -n "$storage" ]] && storage_has_content "$storage" "$wanted" && storages+=("$storage")
+  done < <(pvesm status 2>/dev/null | awk 'NR > 1 && $3 == "active" {print $1}')
+
+  if (( ${#storages[@]} == 0 )) && [[ "$wanted" == snippets ]]; then
+    while read -r storage; do
+      [[ -n "$storage" ]] || continue
+      if pvesm config "$storage" 2>/dev/null | grep -q '^dir:'; then storages+=("$storage"); fi
+    done < <(pvesm status 2>/dev/null | awk 'NR > 1 && $3 == "active" {print $1}')
+    (( ${#storages[@]} > 0 )) || die "Aucun stockage de type Directory ne peut accueillir les snippets cloud-init."
+    ENABLE_SNIPPETS_STORAGE=oui
+    warn "Le type de contenu Snippets n'est active sur aucun stockage. Il sera ajoute au stockage choisi apres votre confirmation finale."
+  fi
+  (( ${#storages[@]} > 0 )) || die "Aucun stockage actif n'accepte le contenu '$wanted'."
+  if (( ${#storages[@]} == 1 )); then
+    printf -v "$variable" '%s' "${storages[0]}"
+    printf '  %s : %s (selection automatique)\n' "$label" "${storages[0]}"
+    return
+  fi
+
+  for index in "${!storages[@]}"; do
+    storage=${storages[$index]}
+    free=$(pvesm status --storage "$storage" 2>/dev/null | awk 'NR > 1 {printf "%.1f GiB libres", $6/1024/1024}')
+    state=OFF
+    [[ "$storage" == "$current" || ( -z "$current" && $index -eq 0 ) ]] && state=ON
+    menu+=("$storage" "${free:-stockage actif}" "$state")
+  done
+  if choice=$(whiptail --title "STOCKAGE" --radiolist "$label" 16 72 7 "${menu[@]}" 3>&1 1>&2 2>&3); then
+    printf -v "$variable" '%s' "$choice"
+  else
+    die "Installation annulee pendant le choix du stockage."
+  fi
+}
+
+prepare_ssh_key() {
+  local candidate key_path=/root/.ssh/nut-peanut_ed25519
+  [[ -n "$SSH_PUBLIC_KEY" ]] && return
+  for candidate in /root/.ssh/id_ed25519.pub /root/.ssh/id_rsa.pub "$key_path.pub"; do
+    if [[ -s "$candidate" ]]; then
+      SSH_PUBLIC_KEY=$(<"$candidate")
+      SSH_KEY_SOURCE=$candidate
+      return
+    fi
+  done
+  install -d -m 0700 /root/.ssh
+  ssh-keygen -q -t ed25519 -N '' -C 'nut-peanut-proxmox' -f "$key_path"
+  SSH_PUBLIC_KEY=$(<"$key_path.pub")
+  SSH_KEY_SOURCE=$key_path
+}
+
 next_free_vmid() {
   local candidate
   candidate=$(pvesh get /cluster/nextid --output-format json 2>/dev/null | tr -dc '0-9')
@@ -88,7 +164,7 @@ on_error() {
 trap on_error ERR
 
 [[ $EUID -eq 0 ]] || die "Executez ce script en root sur Proxmox."
-for cmd in qm pct pvesm pvesh curl sha512sum lsusb awk grep sed base64 openssl ip; do require_command "$cmd"; done
+for cmd in qm pct pvesm pvesh curl sha512sum lsusb awk grep sed base64 openssl ip ssh-keygen whiptail; do require_command "$cmd"; done
 [[ -r /etc/pve/.version ]] || die "Ce systeme ne semble pas etre un noeud Proxmox VE."
 [[ -r /dev/tty && -w /dev/tty ]] || die "Cet installateur doit etre lance depuis un terminal interactif."
 
@@ -96,6 +172,7 @@ VMID=$(next_free_vmid)
 VM_NAME=${VM_NAME:-nut-peanut}
 VM_STORAGE=${VM_STORAGE:-$(first_storage_with_content images || true)}
 SNIPPET_STORAGE=${SNIPPET_STORAGE:-$(first_storage_with_content snippets || true)}
+ENABLE_SNIPPETS_STORAGE=non
 BRIDGE=${BRIDGE:-vmbr0}
 VLAN_TAG=${VLAN_TAG:-}
 VM_CORES=${VM_CORES:-1}
@@ -107,6 +184,7 @@ VM_GATEWAY=${VM_GATEWAY:-}
 VM_DNS=${VM_DNS:-}
 VM_USER=${VM_USER:-nutadmin}
 SSH_PUBLIC_KEY=${SSH_PUBLIC_KEY:-}
+SSH_KEY_SOURCE='fournie par variable'
 TIMEZONE=${TIMEZONE:-Europe/Paris}
 UPS_NAME=${UPS_NAME:-apc}
 PEANUT_PORT=${PEANUT_PORT:-8080}
@@ -124,57 +202,81 @@ else
   USB_ID=${USB_ID:-051d:0003}
 fi
 
-printf '\nAssistant NUT + PeaNUT pour Proxmox VE\n'
-printf 'Le prochain VMID libre detecte est %s (il sera reverifie avant creation).\n\n' "$VMID"
-prompt_default VM_NAME "Nom de la VM" "$VM_NAME"
-prompt_default VM_STORAGE "Stockage du disque VM" "$VM_STORAGE"
-prompt_default SNIPPET_STORAGE "Stockage des snippets cloud-init" "$SNIPPET_STORAGE"
-prompt_default BRIDGE "Bridge Proxmox" "$BRIDGE"
-prompt_default VLAN_TAG "VLAN (vide = aucun)" "$VLAN_TAG"
+clear 2>/dev/null || true
+printf '\n============================================================\n'
+printf '             NUT + PeaNUT - Proxmox VE\n'
+printf '============================================================\n\n'
 
-while true; do
-  prompt_default NETWORK_MODE "Reseau : dhcp ou statique" "$NETWORK_MODE"
-  NETWORK_MODE=${NETWORK_MODE,,}
-  [[ "$NETWORK_MODE" == dhcp || "$NETWORK_MODE" == statique ]] && break
-  warn "Repondez dhcp ou statique."
-done
+MODE_RC=0
+whiptail --title "NUT + PeaNUT" --yes-button "Par defaut" --no-button "Avances" --yesno \
+  "Utiliser les parametres par defaut ?\n\nVMID : prochain libre ($VMID)\nCPU : 1 coeur\nRAM : 1024 Mo\nDisque : 8 Go\nReseau : DHCP sur vmbr0\nVLAN : aucun\nClient NUT Proxmox : non\n\nChoisissez Avances pour personnaliser ces valeurs." \
+  20 72 || MODE_RC=$?
+case $MODE_RC in
+  0) SETTINGS_MODE=default ;;
+  1) SETTINGS_MODE=advanced ;;
+  *) die "Installation annulee par l'utilisateur." ;;
+esac
 
-if [[ "$NETWORK_MODE" == statique ]]; then
-  while ! validate_cidr "$VM_IP_CIDR"; do prompt_default VM_IP_CIDR "Adresse IPv4/CIDR (ex. 192.168.1.50/24)" "$VM_IP_CIDR"; done
-  while ! validate_ipv4 "$VM_GATEWAY"; do prompt_default VM_GATEWAY "Passerelle IPv4" "$VM_GATEWAY"; done
-  while ! validate_ipv4 "$VM_DNS"; do prompt_default VM_DNS "Serveur DNS IPv4" "${VM_DNS:-$VM_GATEWAY}"; done
-  NUT_SERVER_ADDRESS=${VM_IP_CIDR%/*}
-else
-  warn "En DHCP, configurez de preference une reservation DHCP pour cette VM."
+if [[ "$SETTINGS_MODE" == advanced ]]; then
+  dialog_input VM_NAME "NOM DE LA VM" "Nom affiche dans Proxmox" "$VM_NAME"
+  dialog_input VM_CORES "PROCESSEURS" "Nombre de coeurs virtuels" "$VM_CORES"
+  dialog_input VM_MEMORY_MB "MEMOIRE" "Memoire en Mo" "$VM_MEMORY_MB"
+  dialog_input VM_DISK_SIZE "DISQUE" "Taille du disque, par exemple 8G ou 20G" "$VM_DISK_SIZE"
 fi
 
-prompt_default TIMEZONE "Fuseau horaire" "$TIMEZONE"
-if (( ${#APC_USB_IDS[@]} > 1 )); then
-  printf 'Plusieurs UPS APC detectes : %s\n' "${APC_USB_IDS[*]}"
-elif (( ${#APC_USB_IDS[@]} == 1 )); then
-  printf 'UPS APC detecte : %s\n' "${APC_USB_IDS[0]}"
-else
-  warn "Aucun UPS APC detecte automatiquement. Verifiez avec lsusb."
+choose_storage VM_STORAGE images "Choisissez le stockage du disque de la VM"
+choose_storage SNIPPET_STORAGE snippets "Choisissez le stockage de la configuration cloud-init"
+
+if [[ "$SETTINGS_MODE" == advanced ]]; then
+  dialog_input BRIDGE "BRIDGE RESEAU" "Bridge Proxmox utilise par la VM" "$BRIDGE"
+  dialog_input VLAN_TAG "VLAN" "Numero du VLAN (laisser vide pour aucun VLAN)" "$VLAN_TAG"
+  if NETWORK_CHOICE=$(whiptail --title "RESEAU" --radiolist "Choisissez le mode reseau" 12 68 2 \
+    dhcp "Adresse attribuee par votre routeur (recommande pour un premier test)" ON \
+    statique "Adresse IP saisie manuellement" OFF 3>&1 1>&2 2>&3); then
+    NETWORK_MODE=$NETWORK_CHOICE
+  else
+    die "Installation annulee pendant le choix du reseau."
+  fi
+  if [[ "$NETWORK_MODE" == statique ]]; then
+    while ! validate_cidr "$VM_IP_CIDR"; do dialog_input VM_IP_CIDR "ADRESSE IP" "Adresse IPv4 avec prefixe CIDR, par exemple 192.168.1.50/24" "$VM_IP_CIDR"; done
+    while ! validate_ipv4 "$VM_GATEWAY"; do dialog_input VM_GATEWAY "PASSERELLE" "Adresse IPv4 de votre routeur" "$VM_GATEWAY"; done
+    while ! validate_ipv4 "$VM_DNS"; do dialog_input VM_DNS "SERVEUR DNS" "Adresse IPv4 du serveur DNS" "${VM_DNS:-$VM_GATEWAY}"; done
+    NUT_SERVER_ADDRESS=${VM_IP_CIDR%/*}
+  fi
+  dialog_input TIMEZONE "FUSEAU HORAIRE" "Fuseau horaire de la VM" "$TIMEZONE"
 fi
-prompt_default USB_ID "Identifiant USB vendor:product" "$USB_ID"
 
-while [[ -z "$SSH_PUBLIC_KEY" ]]; do
-  prompt_default SSH_PUBLIC_KEY "Cle publique SSH complete" ""
-done
+if (( ${#APC_USB_IDS[@]} == 1 )); then
+  USB_ID=${APC_USB_IDS[0]}
+elif (( ${#APC_USB_IDS[@]} > 1 )); then
+  dialog_input USB_ID "ONDULEUR APC" "Plusieurs appareils APC ont ete detectes : ${APC_USB_IDS[*]}\nSaisissez vendor:product" "$USB_ID"
+else
+  dialog_input USB_ID "ONDULEUR APC INTROUVABLE" "Aucun appareil APC n'a ete detecte. Verifiez le cable avec lsusb, puis saisissez vendor:product." "$USB_ID"
+fi
 
-prompt_yes_no INSTALL_PVE_NUT_CLIENT "Installer aussi le client NUT sur cet hote Proxmox" "$INSTALL_PVE_NUT_CLIENT"
+prepare_ssh_key
+
+if [[ "$SETTINGS_MODE" == advanced ]]; then
+  dialog_yes_no INSTALL_PVE_NUT_CLIENT "CLIENT NUT PROXMOX" \
+    "Installer le client NUT sur cet hote ?\n\nOui permettra a Proxmox de s'arreter proprement lorsque l'onduleur est presque vide. Une adresse stable de la VM sera necessaire." non
+fi
 if [[ "$INSTALL_PVE_NUT_CLIENT" == oui && -z "$NUT_SERVER_ADDRESS" ]]; then
-  prompt_default NUT_SERVER_ADDRESS "Adresse IP reservee ou nom DNS de la VM NUT" ""
-  [[ -n "$NUT_SERVER_ADDRESS" ]] || die "Une adresse stable est requise pour configurer le client NUT Proxmox."
+  dialog_input NUT_SERVER_ADDRESS "ADRESSE DU SERVEUR NUT" "Adresse IP reservee ou nom DNS stable de la VM NUT" ""
+  [[ -n "$NUT_SERVER_ADDRESS" ]] || die "Une adresse stable est requise pour le client NUT Proxmox."
 fi
 
 [[ "$VMID" =~ ^[1-9][0-9]{2,8}$ ]] || die "VMID invalide."
+[[ "$VM_CORES" =~ ^[1-9][0-9]*$ ]] || die "Le nombre de processeurs doit etre un entier positif."
+[[ "$VM_MEMORY_MB" =~ ^[1-9][0-9]*$ ]] || die "La memoire doit etre un entier positif en Mo."
+[[ "$VM_DISK_SIZE" =~ ^[1-9][0-9]*[GM]$ ]] || die "Taille de disque invalide. Exemple attendu : 8G ou 20G."
 guest_id_is_free "$VMID" || die "Le VMID/CTID $VMID vient d'etre occupe. Relancez le script pour obtenir un nouvel identifiant."
 [[ -n "$VM_STORAGE" && -n "$SNIPPET_STORAGE" ]] || die "Stockage compatible introuvable."
 pvesm status --storage "$VM_STORAGE" >/dev/null 2>&1 || die "Stockage VM introuvable : $VM_STORAGE"
 pvesm status --storage "$SNIPPET_STORAGE" >/dev/null 2>&1 || die "Stockage snippets introuvable : $SNIPPET_STORAGE"
 storage_has_content "$VM_STORAGE" images || die "$VM_STORAGE n'accepte pas le contenu images."
-storage_has_content "$SNIPPET_STORAGE" snippets || die "$SNIPPET_STORAGE n'accepte pas le contenu snippets."
+if [[ "$ENABLE_SNIPPETS_STORAGE" != oui ]]; then
+  storage_has_content "$SNIPPET_STORAGE" snippets || die "$SNIPPET_STORAGE n'accepte pas le contenu snippets."
+fi
 [[ -d "/sys/class/net/$BRIDGE" ]] || die "Bridge introuvable : $BRIDGE"
 [[ -z "$VLAN_TAG" || "$VLAN_TAG" =~ ^([1-9]|[1-9][0-9]{1,2}|[1-3][0-9]{3}|40[0-8][0-9]|409[0-4])$ ]] || die "VLAN invalide (1 a 4094)."
 [[ "$USB_ID" =~ ^[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}$ ]] || die "Identifiant USB invalide."
@@ -215,8 +317,16 @@ Resume
   Fuseau horaire  : $TIMEZONE
   Client Proxmox  : $INSTALL_PVE_NUT_CLIENT${NUT_SERVER_ADDRESS:+ ($NUT_SERVER_ADDRESS)}
 EOF
-prompt_yes_no CONFIRM "Creer cette nouvelle VM" non
+dialog_yes_no CONFIRM "CONFIRMATION" \
+  "Creer maintenant la VM $VMID ($VM_NAME) ?\n\nCPU : $VM_CORES coeur(s)\nRAM : $VM_MEMORY_MB Mo\nDisque : $VM_DISK_SIZE sur $VM_STORAGE\nReseau : $NETWORK_SUMMARY\nUSB APC : $USB_ID\nClient NUT Proxmox : $INSTALL_PVE_NUT_CLIENT" non
 [[ "$CONFIRM" == oui ]] || die "Operation annulee."
+
+if [[ "$ENABLE_SNIPPETS_STORAGE" == oui ]]; then
+  CURRENT_CONTENT=$(pvesm config "$SNIPPET_STORAGE" | awk -F': ' '$1 == "content" {print $2}')
+  [[ -n "$CURRENT_CONTENT" ]] || die "Impossible de lire les types de contenu de $SNIPPET_STORAGE."
+  pvesm set "$SNIPPET_STORAGE" --content "${CURRENT_CONTENT},snippets"
+  log "Le contenu Snippets a ete active sur $SNIPPET_STORAGE."
+fi
 
 log "Telechargement et verification de l'image Debian 13 officielle."
 mkdir -p "$IMAGE_CACHE_DIR"
