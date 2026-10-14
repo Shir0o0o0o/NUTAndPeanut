@@ -44,7 +44,7 @@ Lâ€™assistant reprend le fonctionnement familier des Community Scripts Prox
 
 Le mode avancÃ© permet de modifier le nom, le CPU, la mÃ©moire, le disque, le bridge, le VLAN, le rÃ©seau et lâ€™installation facultative du client NUT sur Proxmox. Si aucun stockage nâ€™autorise encore les snippets, le script peut ajouter ce type de contenu Ã  un stockage Proxmox de type **Directory** aprÃ¨s la confirmation finale.
 
-La liste des stockages compatibles est obtenue avec le filtre natif Proxmox `pvesm status --content images` ou `--content snippets`, comme dans les Community Scripts. Cela fonctionne avec les stockages Directory, LVM, LVM-thin, ZFS, Ceph et les autres types pris en charge par Proxmox.
+La liste des stockages compatibles est obtenue avec le filtre natif Proxmox `pvesm status -content images` ou `-content snippets`, comme dans les Community Scripts. Une seconde dÃ©tection relit la configuration de chaque stockage si ce filtre ne renvoie rien. Cela fonctionne avec les stockages Directory, LVM, LVM-thin, ZFS, Ceph et les autres types pris en charge par Proxmox.
 
 Une clÃ© SSH existante du compte `root` est rÃ©utilisÃ©e automatiquement. Si aucune clÃ© nâ€™existe, une clÃ© dÃ©diÃ©e est crÃ©Ã©e sous `/root/.ssh/nut-peanut_ed25519` ; aucune saisie manuelle de clÃ© nâ€™est nÃ©cessaire.
 
