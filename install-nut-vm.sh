@@ -77,7 +77,21 @@ storage_has_content() {
 }
 
 list_storages_with_content() {
-  pvesm status --content "$1" 2>/dev/null | awk 'NR > 1 && $1 != "" {print $1}'
+  local wanted=$1 storage found=0
+  while read -r storage; do
+    [[ -n "$storage" ]] || continue
+    printf '%s\n' "$storage"
+    found=1
+  done < <(pvesm status -content "$wanted" 2>/dev/null | awk 'NR > 1 && $1 != "" {print $1}')
+
+  # Compatibilite avec les versions/configurations PVE ou le filtre -content
+  # ne renvoie rien : relire directement la configuration de chaque stockage.
+  if (( found == 0 )); then
+    while read -r storage; do
+      [[ -n "$storage" ]] || continue
+      storage_has_content "$storage" "$wanted" && printf '%s\n' "$storage"
+    done < <(list_active_storages)
+  fi
 }
 
 list_active_storages() {
@@ -119,7 +133,7 @@ choose_storage() {
 
   for index in "${!storages[@]}"; do
     storage=${storages[$index]}
-    free=$(pvesm status --storage "$storage" 2>/dev/null | awk 'NR > 1 {printf "%.1f GiB libres", $6/1024/1024}')
+    free=$(pvesm status -storage "$storage" 2>/dev/null | awk 'NR > 1 {printf "%.1f GiB libres", $6/1024/1024}')
     state=OFF
     [[ "$storage" == "$current" || ( -z "$current" && $index -eq 0 ) ]] && state=ON
     menu+=("$storage" "${free:-stockage actif}" "$state")
@@ -279,8 +293,8 @@ fi
 [[ "$VM_DISK_SIZE" =~ ^[1-9][0-9]*[GM]$ ]] || die "Taille de disque invalide. Exemple attendu : 8G ou 20G."
 guest_id_is_free "$VMID" || die "Le VMID/CTID $VMID vient d'etre occupe. Relancez le script pour obtenir un nouvel identifiant."
 [[ -n "$VM_STORAGE" && -n "$SNIPPET_STORAGE" ]] || die "Stockage compatible introuvable."
-pvesm status --storage "$VM_STORAGE" >/dev/null 2>&1 || die "Stockage VM introuvable : $VM_STORAGE"
-pvesm status --storage "$SNIPPET_STORAGE" >/dev/null 2>&1 || die "Stockage snippets introuvable : $SNIPPET_STORAGE"
+pvesm status -storage "$VM_STORAGE" >/dev/null 2>&1 || die "Stockage VM introuvable : $VM_STORAGE"
+pvesm status -storage "$SNIPPET_STORAGE" >/dev/null 2>&1 || die "Stockage snippets introuvable : $SNIPPET_STORAGE"
 storage_has_content "$VM_STORAGE" images || die "$VM_STORAGE n'accepte pas le contenu images."
 if [[ "$ENABLE_SNIPPETS_STORAGE" != oui ]]; then
   storage_has_content "$SNIPPET_STORAGE" snippets || die "$SNIPPET_STORAGE n'accepte pas le contenu snippets."
