@@ -40,6 +40,12 @@ chmod +x install-nut-vm.sh
 
 Lâ€™assistant affiche un rÃ©sumÃ© et demande une confirmation avant de crÃ©er quoi que ce soit.
 
+Lâ€™assistant reprend le fonctionnement familier des Community Scripts Proxmox : il commence par proposer **ParamÃ¨tres par dÃ©faut** ou **AvancÃ©s**, puis utilise des fenÃªtres de sÃ©lection claires. Le mode par dÃ©faut crÃ©e une VM avec 1 cÅ“ur, 1 Go de RAM, un disque de 8 Go et le DHCP sur `vmbr0`. Il ne demande que le stockage lorsquâ€™un choix est nÃ©cessaire et une confirmation finale.
+
+Le mode avancÃ© permet de modifier le nom, le CPU, la mÃ©moire, le disque, le bridge, le VLAN, le rÃ©seau et lâ€™installation facultative du client NUT sur Proxmox. Si aucun stockage nâ€™autorise encore les snippets, le script peut ajouter ce type de contenu Ã  un stockage Proxmox de type **Directory** aprÃ¨s la confirmation finale.
+
+Une clÃ© SSH existante du compte `root` est rÃ©utilisÃ©e automatiquement. Si aucune clÃ© nâ€™existe, une clÃ© dÃ©diÃ©e est crÃ©Ã©e sous `/root/.ssh/nut-peanut_ed25519` ; aucune saisie manuelle de clÃ© nâ€™est nÃ©cessaire.
+
 ## RÃ©seau
 
 ### DHCP
