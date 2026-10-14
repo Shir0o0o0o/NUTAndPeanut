@@ -205,6 +205,23 @@ guest_id_is_free() {
   ! qm status "$1" >/dev/null 2>&1 && ! pct status "$1" >/dev/null 2>&1
 }
 
+choose_vmid() {
+  local proposed=$VMID selected
+  while true; do
+    dialog_input selected "NUMERO DE LA VM" "Numero souhaite (100 a 999999999). Le prochain numero libre est propose. Une VM ou un conteneur existant ne sera jamais remplace." "$proposed"
+    if [[ ! "$selected" =~ ^[1-9][0-9]{2,8}$ ]]; then
+      warn "Numero invalide : saisissez un entier de 100 a 999999999, sans zero initial."
+      continue
+    fi
+    if ! guest_id_is_free "$selected"; then
+      warn "Le numero $selected est deja utilise par une VM/un conteneur, ou sa disponibilite ne peut pas etre verifiee. Choisissez un autre numero ou annulez."
+      continue
+    fi
+    VMID=$selected
+    return 0
+  done
+}
+
 detect_apc_usb_ids() {
   lsusb | awk 'tolower($0) ~ /id 051d:[0-9a-f]{4}/ {print tolower($6)}' | sort -u
 }
@@ -275,6 +292,8 @@ case $MODE_RC in
   1) SETTINGS_MODE=advanced ;;
   *) die "Installation annulee par l'utilisateur." ;;
 esac
+
+choose_vmid
 
 if [[ "$SETTINGS_MODE" == advanced ]]; then
   dialog_input VM_NAME "NOM DE LA VM" "Nom affiche dans Proxmox" "$VM_NAME"
@@ -378,7 +397,7 @@ SNIPPET_SUMMARY=$SNIPPET_STORAGE
 cat <<EOF
 
 Resume
-  VMID            : $VMID (prochain identifiant libre)
+  VMID            : $VMID (disponibilite verifiee)
   VM              : $VM_NAME, $VM_CORES vCPU, $VM_MEMORY_MB Mo, disque $VM_DISK_SIZE
   Reseau          : $NETWORK_SUMMARY, bridge $BRIDGE${VLAN_TAG:+, VLAN $VLAN_TAG}
   Stockages       : disque=$VM_STORAGE, snippets=$SNIPPET_SUMMARY

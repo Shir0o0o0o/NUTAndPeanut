@@ -169,3 +169,8 @@ Le bootstrap verifie le moteur Docker, la presence de l'USB selectionne, recharg
 Le message final sur Proxmox annonce uniquement le lancement de la VM. La reussite dans Debian doit etre confirmee avec `sudo cloud-init status --wait --long`, puis `sudo upsc apc@localhost`. Ne demarrez le client NUT Proxmox qu'apres cette validation.
 
 Les tests `bash tests/storage.sh` et `bash tests/guest.sh` sont des simulations sans Proxmox : ils couvrent les protections de stockage/VMID et les echecs USB, pilote NUT et conteneur PeaNUT. Ils ne remplacent pas un deploiement de validation sur Proxmox. Cette correction ne modifie aucune VM existante.
+## Choix du numero de VM
+
+Dans les deux modes (Par defaut et Avances), le dialogue NUMERO DE LA VM propose le prochain VMID libre. Vous pouvez le conserver ou saisir un numero de 100 a 999999999. Les numeros invalides et ceux deja utilises par une VM ou un conteneur sont refuses. Si la disponibilite ne peut pas etre verifiee, le numero est refuse egalement. Annuler interrompt l'installation.
+
+Le numero choisi est affiche dans le resume et revérifie avant la creation pour proteger les invites existants. Aucun numero occupe n'est remplace ni supprime.

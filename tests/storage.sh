@@ -88,6 +88,26 @@ QM_OCCUPIED=0 PCT_OCCUPIED=1
 if guest_id_is_free 125; then exit 1; fi
 PCT_OCCUPIED=0
 guest_id_is_free 126
+# Le dialogue refuse les formats invalides et les identifiants occupes.
+VMID=126
+dialog_calls=0
+dialog_input() {
+  dialog_calls=$((dialog_calls + 1))
+  case "$dialog_calls" in
+    1) printf -v "$1" '%s' 099 ;;
+    2) printf -v "$1" '%s' 125 ;;
+    3) printf -v "$1" '%s' 200 ;;
+    *) exit 1 ;;
+  esac
+}
+pvesh() { [[ "$4" != 125 ]]; }
+choose_vmid
+assert_eq "$VMID" 200
+assert_eq "$dialog_calls" 3
+# Une entree vide validee par dialog_input reprend la proposition par defaut.
+dialog_input() { printf -v "$1" '%s' "$4"; }
+choose_vmid
+assert_eq "$VMID" 200
 # Une commande qm create en echec doit stopper avant importdisk/set/start.
 # Passer le chemin comme argument plutot qu'une variable d'environnement.
 rc=0
